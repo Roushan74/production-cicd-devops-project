@@ -47,17 +47,20 @@ WORKDIR /app
 # 1. `apk upgrade` pulls patched OS packages (notably OpenSSL) that were
 #    published after the base image tag was cut. Without it the image ships
 #    known-vulnerable libssl3/libcrypto3 even though a fix exists.
-# 2. npm is deleted from the runtime image. Nothing at runtime installs
-#    packages, and npm's bundled dependency tree (tar, pacote, sigstore,
-#    brace-expansion, picomatch, ip-address) accounts for the majority of
-#    HIGH/CRITICAL findings in a stock node:alpine image. Removing it is
-#    strictly better than suppressing those findings in .trivyignore.
+# 2. The package managers are deleted from the runtime image. Nothing at
+#    runtime installs packages, and npm's bundled dependency tree (tar, pacote,
+#    sigstore, brace-expansion, picomatch, ip-address) accounted for the
+#    majority of HIGH/CRITICAL findings in a stock node:alpine image. Removing
+#    them is strictly better than suppressing those findings in .trivyignore.
 RUN apk upgrade --no-cache \
     && rm -rf /usr/local/lib/node_modules/npm \
               /usr/local/lib/node_modules/corepack \
+              /opt/yarn-* \
               /usr/local/bin/npm \
               /usr/local/bin/npx \
               /usr/local/bin/corepack \
+              /usr/local/bin/yarn \
+              /usr/local/bin/yarnpkg \
     && rm -rf /var/cache/apk/*
 
 COPY --from=deps --chown=root:root /app/node_modules ./node_modules
