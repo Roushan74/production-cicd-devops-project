@@ -635,6 +635,9 @@ sudo ./scripts/bootstrap-server.sh   # once
 
 > **Status: configured, not deployed.** The account owner explicitly declined to create billable
 > infrastructure during this build, so **no AWS resource exists** and no public endpoint is claimed.
+> The CD workflow requires `DEPLOY_ENABLED=true` plus `EC2_INSTANCE_ID` and `AWS_DEPLOY_ROLE_ARN`;
+> without them a preflight job reports `Deployment: SKIPPED (not configured)` with a warning
+> annotation, so an unconfigured repository stays honest and green instead of failing on every push.
 > What *is* verified: `provision-aws.sh --dry-run` resolves the real account, identity, region and
 > operator IP and prints the cost estimate; `cleanup-aws.sh --dry-run` confirms nothing is tagged for
 > this project; every script passes `bash -n`; and the deployment mechanics they drive (blue/green

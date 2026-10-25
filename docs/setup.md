@@ -137,6 +137,7 @@ gh repo create production-cicd-devops-project --public --source=. --remote=origi
 | --- | --- | --- |
 | `PUBLISH_ENABLED` | `true` | Enables the Docker Hub publish job |
 | `SONAR_ENABLED` | `true` | Enables the SonarQube job |
+| `DEPLOY_ENABLED` | `true` | Enables the CD deploy job |
 | `SONAR_HOST_URL` | `https://sonarcloud.io` | Sonar endpoint |
 | `AWS_REGION` | `us-east-1` | Deployment region |
 | `EC2_INSTANCE_ID` | `i-0abc...` | Target instance |

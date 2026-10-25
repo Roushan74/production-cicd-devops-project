@@ -14,6 +14,11 @@ name: CD
 # Transport: AWS Systems Manager Run Command. The instance has NO inbound SSH
 # port open, and no long-lived AWS access key is stored in GitHub - the runner
 # assumes a role via GitHub OIDC.
+#
+# GATING: deployment requires repository variable DEPLOY_ENABLED == 'true'.
+# Without it the preflight job reports "not configured" with a warning
+# annotation and the deploy job is skipped, so an unconfigured repository shows
+# an honest, green run instead of a permanent red one.
 # ---------------------------------------------------------------------------
 
 on:
@@ -24,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Image tag to deploy (defaults to the current commit SHA)'
+        description: 'Image tag to deploy (defaults to the commit SHA of this run)'
         required: false
         type: string
       skip_verification:
@@ -47,19 +52,59 @@ env:
   EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
 
 jobs:
-  deploy:
-    name: Deploy to EC2
+  preflight:
+    name: Deployment preflight
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    # A failed or cancelled CI run must never trigger a deployment.
+    timeout-minutes: 5
+    # A failed or cancelled CI run must never lead to a deployment attempt.
     if: |
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.conclusion == 'success'
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Check deployment configuration
+        id: check
+        env:
+          DEPLOY_ENABLED: ${{ vars.DEPLOY_ENABLED }}
+          INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+          ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+        run: |
+          missing=""
+          [ "${DEPLOY_ENABLED}" = "true" ] || missing="${missing} DEPLOY_ENABLED"
+          [ -n "${INSTANCE_ID}" ]          || missing="${missing} EC2_INSTANCE_ID"
+          [ -n "${ROLE_ARN}" ]             || missing="${missing} AWS_DEPLOY_ROLE_ARN"
+
+          if [ -z "${missing}" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Deployment is configured for instance ${INSTANCE_ID}."
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=Deployment disabled::Missing configuration:${missing}. Nothing was deployed and no AWS credentials were requested. See README section 15."
+            {
+              echo "### Deployment: SKIPPED (not configured)"
+              echo ""
+              echo "Missing repository configuration: \`${missing# }\`"
+              echo ""
+              echo "No infrastructure was contacted and no deployment occurred."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  deploy:
+    name: Deploy to EC2
+    needs: preflight
+    if: needs.preflight.outputs.enabled == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
     environment:
       name: production
       url: ${{ vars.PUBLIC_BASE_URL }}
+    env:
+      # For workflow_run, github.sha is the default branch tip; the commit CI
+      # actually validated is head_sha, so prefer it explicitly.
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
     steps:
-      - name: Checkout
+      - name: Checkout the commit CI validated
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
@@ -69,7 +114,7 @@ jobs:
         env:
           INPUT_TAG: ${{ inputs.image_tag }}
         run: |
-          TAG="${INPUT_TAG:-${GITHUB_SHA}}"
+          TAG="${INPUT_TAG:-${HEAD_SHA}}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Deploying ${IMAGE_NAME}:${TAG}"
 
@@ -91,7 +136,6 @@ jobs:
       - name: Deploy via SSM (health-checked, auto-rollback)
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           chmod +x scripts/*.sh
           scripts/ssm-deploy.sh \
@@ -100,16 +144,23 @@ jobs:
             --image "${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${{ steps.image.outputs.tag }}" \
             --rollback-on-failure
 
+      - name: Resolve public base URL
+        id: url
+        run: |
+          if [ -n "${{ vars.PUBLIC_BASE_URL }}" ]; then
+            echo "value=${{ vars.PUBLIC_BASE_URL }}" >> "$GITHUB_OUTPUT"
+          else
+            IP="$(aws ec2 describe-instances --instance-ids "${EC2_INSTANCE_ID}" \
+              --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)"
+            echo "value=http://${IP}" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Verify the public endpoint
         if: ${{ !inputs.skip_verification }}
         run: |
           scripts/health-check.sh \
-            --url "${PUBLIC_BASE_URL:-http://$(aws ec2 describe-instances \
-              --instance-ids "${EC2_INSTANCE_ID}" \
-              --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)}" \
+            --url "${{ steps.url.outputs.value }}" \
             --retries 10 --interval 5
-        env:
-          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
 
       - name: Deployment summary
         if: always()
