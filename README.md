@@ -633,6 +633,14 @@ sudo ./scripts/bootstrap-server.sh   # once
 ./scripts/deploy.sh --image <ref>
 ```
 
+> **Status: configured, not deployed.** The account owner explicitly declined to create billable
+> infrastructure during this build, so **no AWS resource exists** and no public endpoint is claimed.
+> What *is* verified: `provision-aws.sh --dry-run` resolves the real account, identity, region and
+> operator IP and prints the cost estimate; `cleanup-aws.sh --dry-run` confirms nothing is tagged for
+> this project; every script passes `bash -n`; and the deployment mechanics they drive (blue/green
+> swap, health gate, rollback, failure rejection) were executed end-to-end against a containerised
+> Nginx on this machine — see [§17](#17-health-checks-and-rollback).
+
 ---
 
 ## 16. Nginx reverse proxy
@@ -809,9 +817,10 @@ Stated plainly, because a portfolio project that overclaims is worse than a smal
 3. **HTTPS is not configured.** No domain, no certificate.
 4. **SonarQube is configured but never executed** in this environment (no account/token).
 5. **Docker Hub publishing is configured but never executed** (no credentials).
-6. **AWS deployment requires approval and was not performed autonomously** — creating billable
-   infrastructure needs the account owner's consent. Scripts and workflows are complete and the
-   deployment logic is verified locally.
+6. **AWS deployment was not performed.** Creating billable infrastructure needs the account owner's
+   consent, which was withheld for this build. The scripts, workflow and Nginx configuration are
+   complete, syntax-checked, and their deployment logic is verified locally; no EC2 instance, public
+   IP or endpoint exists, and none is claimed.
 7. **The `latest` tag exists** for convenience; deployment never uses it.
 8. **Trivy reports known CVEs only** — it is not runtime protection, and it cannot judge
    exploitability.

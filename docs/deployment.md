@@ -2,6 +2,15 @@
 
 How a commit travels from `git push` to a verified production endpoint.
 
+> **Current status: no AWS resources exist.**
+>
+> The infrastructure described here was **not** created — the account owner declined to incur the
+> ~$11.9/month cost during this build. Everything below is implemented and syntax-checked, and the
+> deployment mechanics were exercised end-to-end against a containerised Nginx on the development
+> machine (§6). Nothing in this document is a claim that a real EC2 deployment happened.
+>
+> To actually deploy: run §2, then §3. Total time ~10 minutes, cost as stated in §9.
+
 ---
 
 ## 1. Deployment model
@@ -132,6 +141,11 @@ tagged images.
 ---
 
 ## 6. Verified behaviour (real output)
+
+> These transcripts come from executing `deploy.sh` and `rollback.sh` on this machine against a
+> containerised Nginx and two image versions — the same scripts and the same Nginx configuration
+> files that would run on EC2, with only the upstream host and ports overridden through the
+> documented environment variables. No AWS resource was involved.
 
 Blue/green switch with 120 concurrent requests during the change:
 

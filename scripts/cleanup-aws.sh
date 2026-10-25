@@ -47,13 +47,23 @@ SG_IDS="$(aws ec2 describe-security-groups --region "$REGION" \
   --filters "Name=tag:Project,Values=${PROJECT_TAG}" \
   --query 'SecurityGroups[].GroupId' --output text 2>/dev/null || true)"
 
+# Report IAM only if it actually exists - a preview that lists resources which
+# are not there is worse than no preview at all.
+IAM_FOUND=""
+if aws iam get-role --role-name "${PROJECT_TAG}-ec2-role" >/dev/null 2>&1; then
+  IAM_FOUND="${PROJECT_TAG}-ec2-role"
+fi
+if aws iam get-instance-profile --instance-profile-name "${PROJECT_TAG}-ec2-profile" >/dev/null 2>&1; then
+  IAM_FOUND="${IAM_FOUND:+${IAM_FOUND} / }${PROJECT_TAG}-ec2-profile"
+fi
+
 cat <<EOF
 
 The following resources are tagged Project=${PROJECT_TAG} in ${REGION}:
 
   EC2 instances      : ${INSTANCE_IDS:-<none>}
   Security groups    : ${SG_IDS:-<none>}
-  IAM role/profile   : ${PROJECT_TAG}-ec2-role / ${PROJECT_TAG}-ec2-profile
+  IAM role/profile   : ${IAM_FOUND:-<none>}
 
 Nothing else in the account is touched.
 
