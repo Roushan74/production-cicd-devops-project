@@ -1,0 +1,43 @@
+# Keep the build context small and free of anything sensitive.
+# Anything listed here is never sent to the Docker daemon.
+
+# Dependencies are reinstalled inside the image with npm ci
+node_modules/
+
+# Tests, coverage and lint output are not part of the runtime artefact
+tests/
+coverage/
+.scannerwork/
+*.log
+
+# Secrets and local environment (must never enter an image layer)
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+.aws/
+.docker/
+
+# Version control and CI metadata
+.git/
+.gitignore
+.github/
+
+# Docs and editor/OS noise
+docs/
+*.md
+LICENSE
+.DS_Store
+.idea/
+.vscode/
+
+# Local deployment helpers (run from the host / CI, not inside the image)
+scripts/
+nginx/
+docker-compose.yml
+Dockerfile
+.dockerignore

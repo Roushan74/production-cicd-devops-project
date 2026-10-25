@@ -1,0 +1,31 @@
+# ---- Dependencies ----
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ---- Test / build artefacts ----
+coverage/
+.scannerwork/
+dist/
+*.log
+
+# ---- Environment & secrets (NEVER commit) ----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+credentials
+
+# ---- OS / editor noise ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---- Local deployment state ----
+.deploy/

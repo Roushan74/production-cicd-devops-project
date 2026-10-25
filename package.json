@@ -1,0 +1,43 @@
+{
+  "name": "production-cicd-devops-project",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Notes REST API used as the workload for a production-grade CI/CD pipeline (GitHub Actions, SonarQube, Trivy, Docker Hub, AWS EC2, Nginx).",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "jest --runInBand",
+    "test:coverage": "jest --runInBand --coverage",
+    "test:ci": "jest --ci --runInBand --coverage",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "audit:prod": "npm audit --omit=dev --audit-level=high"
+  },
+  "keywords": [
+    "devops",
+    "ci-cd",
+    "github-actions",
+    "docker",
+    "aws",
+    "nginx",
+    "sonarqube",
+    "trivy"
+  ],
+  "author": "Roushan Kumar",
+  "license": "MIT",
+  "dependencies": {
+    "express": "5.3.0",
+    "helmet": "8.3.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "eslint": "10.13.0",
+    "globals": "17.13.0",
+    "jest": "30.5.2",
+    "supertest": "7.3.1"
+  }
+}
