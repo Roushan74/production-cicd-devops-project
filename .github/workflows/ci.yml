@@ -1,0 +1,325 @@
+name: CI
+
+# ---------------------------------------------------------------------------
+# Continuous Integration
+#
+# Runs on every pull request and on every push to main. Produces the only
+# artefact that is allowed to be deployed: a scanned, SHA-tagged image.
+#
+# Security model:
+#  - Default token permission is read-only; each job opts in to what it needs.
+#  - No job triggered by a pull request can reach Docker Hub or AWS, because
+#    publishing is gated on `push` to `main` only.
+#  - Every third-party action is pinned to an immutable commit SHA.
+# ---------------------------------------------------------------------------
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  NODE_VERSION: '22.22.2'
+  IMAGE_NAME: production-cicd-devops-project
+  # Gate: fail on CRITICAL or HIGH. MEDIUM/LOW are reported but not blocking.
+  TRIVY_SEVERITIES: 'CRITICAL,HIGH'
+
+jobs:
+  # -------------------------------------------------------------------------
+  # 1. Static analysis + tests + coverage
+  # -------------------------------------------------------------------------
+  lint-and-test:
+    name: Lint, test and coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies (reproducible)
+        run: npm ci --no-audit --no-fund
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Run tests with coverage
+        run: npm run test:ci
+
+      - name: Read application version
+        id: version
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-report
+          path: coverage/
+          retention-days: 14
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "### Lint, test and coverage"
+            echo ""
+            echo "| Check | Result |"
+            echo "| --- | --- |"
+            echo "| ESLint | ${{ job.status }} |"
+            echo "| Jest (33 tests, coverage gate 80%) | ${{ job.status }} |"
+            echo "| App version | ${{ steps.version.outputs.value }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # -------------------------------------------------------------------------
+  # 2. SonarQube / SonarCloud analysis + quality gate
+  #
+  # Only runs when the repository variable SONAR_ENABLED == 'true'.
+  # When it is not configured the job is skipped and the reason is written to
+  # the run summary - it is never reported as a success.
+  # -------------------------------------------------------------------------
+  sonarqube:
+    name: SonarQube analysis and quality gate
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    if: ${{ vars.SONAR_ENABLED == 'true' }}
+    steps:
+      - name: Checkout (full history for accurate blame)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          fetch-depth: 0
+
+      - name: Download coverage report
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: coverage-report
+          path: coverage/
+
+      - name: SonarQube scan
+        uses: SonarSource/sonarqube-scan-action@2f77a1ec69fb1d595b06f35ab27e97605bdef703 # v5.3.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+
+      - name: Enforce quality gate
+        uses: SonarSource/sonarqube-quality-gate-action@7a5fffe8e523c40e0c740b6bc2712ab503e52efa # v1.1.0
+        timeout-minutes: 10
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ vars.SONAR_HOST_URL || 'https://sonarcloud.io' }}
+
+  # -------------------------------------------------------------------------
+  # 3. Build the image once, scan it, and hand the exact bytes to the publish
+  #    job. The artefact that is scanned is the artefact that gets pushed.
+  # -------------------------------------------------------------------------
+  build-and-scan:
+    name: Build image and scan for vulnerabilities
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      security-events: write # required to upload the SARIF report
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+
+      - name: Read application version
+        id: version
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.10.0
+
+      - name: Build image (not pushed yet)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.13.0
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: |
+            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.IMAGE_NAME }}:ci
+          build-args: |
+            APP_VERSION=${{ steps.version.outputs.value }}
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Show image size
+        run: |
+          docker image inspect --format 'Image size: {{.Size}} bytes' "${IMAGE_NAME}:ci"
+
+      # Dependency scanning (SCA): looks at package-lock.json inside the image.
+      - name: Scan dependencies (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: ${{ env.TRIVY_SEVERITIES }}
+          ignore-unfixed: true
+          format: table
+          output: trivy-dependencies.txt
+          exit-code: '1'
+
+      # Container image scanning (OS packages + application dependencies).
+      - name: Scan image for vulnerabilities (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          scanners: vuln
+          severity: ${{ env.TRIVY_SEVERITIES }}
+          ignore-unfixed: true
+          format: table
+          output: trivy-image.txt
+          exit-code: '1'
+
+      - name: Scan image for exposed secrets and misconfiguration (Trivy)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          scanners: secret,misconfig
+          format: table
+          output: trivy-secrets-misconfig.txt
+          exit-code: '1'
+
+      - name: Generate SARIF report for code scanning
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          scanners: vuln
+          severity: 'CRITICAL,HIGH,MEDIUM'
+          ignore-unfixed: true
+          format: sarif
+          output: trivy-results.sarif
+          exit-code: '0'
+
+      # Code scanning needs GitHub Advanced Security, which is free on public
+      # repositories. On a private repo the upload is skipped rather than
+      # failing - the blocking gate above is unaffected.
+      - name: Upload SARIF to code scanning
+        if: ${{ always() && github.event.repository.visibility == 'public' }}
+        uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.29.2
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy-image
+
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: security-reports
+          path: |
+            trivy-dependencies.txt
+            trivy-image.txt
+            trivy-secrets-misconfig.txt
+            trivy-results.sarif
+          retention-days: 30
+
+      # Export the exact scanned image so the publish job pushes these bytes.
+      - name: Export scanned image
+        run: docker save "${{ env.IMAGE_NAME }}:ci" -o /tmp/image.tar
+
+      - name: Upload scanned image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: scanned-image
+          path: /tmp/image.tar
+          retention-days: 7
+
+  # -------------------------------------------------------------------------
+  # 4. Publish to Docker Hub - main branch only, after every gate passed.
+  # -------------------------------------------------------------------------
+  publish:
+    name: Publish image to Docker Hub
+    needs: [lint-and-test, sonarqube, build-and-scan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # always() is required so a *skipped* sonarqube job does not silently skip
+    # publishing; every gate that did run must have succeeded.
+    if: |
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.lint-and-test.result == 'success' &&
+      needs.build-and-scan.result == 'success' &&
+      (needs.sonarqube.result == 'success' || needs.sonarqube.result == 'skipped')
+    permissions:
+      contents: read
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Explain a skipped quality gate
+        if: ${{ needs.sonarqube.result == 'skipped' }}
+        run: |
+          echo "::warning title=SonarQube not configured::SONAR_ENABLED is not 'true' - SonarQube analysis and its quality gate did NOT run for this commit."
+          echo "### SonarQube: SKIPPED (not configured)" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Download scanned image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: scanned-image
+          path: /tmp
+
+      - name: Load scanned image
+        run: docker load -i /tmp/image.tar
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.4.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Tag image
+        id: meta
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          IMAGE="${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+          # Immutable tag = full commit SHA. `latest` is a convenience alias
+          # and is never used as the deployment reference.
+          docker tag "${IMAGE_NAME}:ci" "${IMAGE}:${GITHUB_SHA}"
+          docker tag "${IMAGE_NAME}:ci" "${IMAGE}:latest"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Tagged ${IMAGE}:${GITHUB_SHA}"
+
+      - name: Push image
+        id: push
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          IMAGE="${DOCKERHUB_USERNAME}/${IMAGE_NAME}"
+          docker push "${IMAGE}:${GITHUB_SHA}"
+          docker push "${IMAGE}:latest"
+          # Record the content digest - this is what deployment pins.
+          DIGEST=$(docker inspect --format '{{index .RepoDigests 0}}' "${IMAGE}:${GITHUB_SHA}" | cut -d@ -f2)
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Published image"
+            echo ""
+            echo '```'
+            echo "${IMAGE}:${GITHUB_SHA}"
+            echo "${IMAGE}@${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify the published manifest is pullable
+        run: docker buildx imagetools inspect "${{ steps.meta.outputs.image }}:${{ github.sha }}"

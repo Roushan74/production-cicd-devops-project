@@ -1,0 +1,126 @@
+name: CD
+
+# ---------------------------------------------------------------------------
+# Continuous Deployment to AWS EC2
+#
+# Triggered only when the CI workflow on `main` finishes successfully, or
+# manually for a specific, already-published image tag.
+#
+# Why workflow_run instead of a job inside ci.yml:
+#  - untrusted pull requests can never reach this workflow, so they can never
+#    obtain AWS credentials;
+#  - the deployed artefact is the one CI already built, scanned and published.
+#
+# Transport: AWS Systems Manager Run Command. The instance has NO inbound SSH
+# port open, and no long-lived AWS access key is stored in GitHub - the runner
+# assumes a role via GitHub OIDC.
+# ---------------------------------------------------------------------------
+
+on:
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Image tag to deploy (defaults to the current commit SHA)'
+        required: false
+        type: string
+      skip_verification:
+        description: 'Skip the post-deploy public health check (not recommended)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  id-token: write # GitHub OIDC -> AWS STS, no static credentials
+
+concurrency:
+  group: cd-production
+  cancel-in-progress: false # never cancel a deployment midway
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  IMAGE_NAME: production-cicd-devops-project
+  EC2_INSTANCE_ID: ${{ vars.EC2_INSTANCE_ID }}
+
+jobs:
+  deploy:
+    name: Deploy to EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # A failed or cancelled CI run must never trigger a deployment.
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    environment:
+      name: production
+      url: ${{ vars.PUBLIC_BASE_URL }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.2.2
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Resolve image tag
+        id: image
+        env:
+          INPUT_TAG: ${{ inputs.image_tag }}
+        run: |
+          TAG="${INPUT_TAG:-${GITHUB_SHA}}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "Deploying ${IMAGE_NAME}:${TAG}"
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.1.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: gha-cd-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity and target instance
+        run: |
+          aws sts get-caller-identity --query 'Arn' --output text
+          aws ec2 describe-instances \
+            --instance-ids "${EC2_INSTANCE_ID}" \
+            --query 'Reservations[0].Instances[0].[State.Name,InstanceType,PublicIpAddress]' \
+            --output text
+
+      - name: Deploy via SSM (health-checked, auto-rollback)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          chmod +x scripts/*.sh
+          scripts/ssm-deploy.sh \
+            --instance "${EC2_INSTANCE_ID}" \
+            --region "${AWS_REGION}" \
+            --image "${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${{ steps.image.outputs.tag }}" \
+            --rollback-on-failure
+
+      - name: Verify the public endpoint
+        if: ${{ !inputs.skip_verification }}
+        run: |
+          scripts/health-check.sh \
+            --url "${PUBLIC_BASE_URL:-http://$(aws ec2 describe-instances \
+              --instance-ids "${EC2_INSTANCE_ID}" \
+              --query 'Reservations[0].Instances[0].PublicIpAddress' --output text)}" \
+            --retries 10 --interval 5
+        env:
+          PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL }}
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          {
+            echo "### Deployment"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Image | \`${IMAGE_NAME}:${{ steps.image.outputs.tag }}\` |"
+            echo "| Instance | \`${EC2_INSTANCE_ID}\` |"
+            echo "| Region | \`${AWS_REGION}\` |"
+            echo "| Result | ${{ job.status }} |"
+          } >> "$GITHUB_STEP_SUMMARY"

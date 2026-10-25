@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------------------
+# Trivy ignore file - POLICY: no active ignores.
+#
+# This file exists so that the policy is explicit and reviewable, not so that
+# findings can be silenced. An empty ignore list is intentional.
+#
+# Rules for adding an entry (all three are mandatory):
+#   1. The CVE has NO fixed version available, or the vulnerable code path is
+#      provably unreachable in this application.
+#   2. A comment above the entry records: CVE id, why it is not exploitable
+#      here, the owner, and a review-by date.
+#   3. The entry is referenced in a pull request description and re-reviewed
+#      at the stated date.
+#
+# Example of an ACCEPTABLE entry (format only - not active):
+#   # CVE-2099-00000 - Go stdlib, no fix published. Only reachable via a CLI
+#   # flag this service never exposes. Owner: roushan. Review by: 2026-12-31.
+#   CVE-2099-00000
+#
+# Note: the CI pipeline also passes --ignore-unfixed, which skips findings that
+# have no available fix. That is a documented, repo-wide policy decision, not a
+# per-finding suppression, and it is visible in .github/workflows/ci.yml.
+# ---------------------------------------------------------------------------
