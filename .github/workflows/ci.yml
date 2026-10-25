@@ -233,6 +233,23 @@ jobs:
             trivy-results.sarif
           retention-days: 30
 
+      - name: Report publishing status
+        if: always()
+        env:
+          PUBLISH_ENABLED: ${{ vars.PUBLISH_ENABLED }}
+        run: |
+          if [ "${PUBLISH_ENABLED}" != "true" ]; then
+            echo "::warning title=Docker Hub publishing disabled::PUBLISH_ENABLED is not 'true', so no image was pushed. Set repository variable PUBLISH_ENABLED=true and secrets DOCKERHUB_USERNAME / DOCKERHUB_TOKEN to enable it."
+            {
+              echo "### Docker Hub publishing: SKIPPED (not configured)"
+              echo ""
+              echo "The image was built and scanned but not published. Required:"
+              echo "variable \`PUBLISH_ENABLED=true\`, secrets \`DOCKERHUB_USERNAME\` and \`DOCKERHUB_TOKEN\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Publishing is enabled; the publish job will push \`:${GITHUB_SHA}\`."
+          fi
+
       # Export the exact scanned image so the publish job pushes these bytes.
       - name: Export scanned image
         run: docker save "${{ env.IMAGE_NAME }}:ci" -o /tmp/image.tar
@@ -254,13 +271,17 @@ jobs:
     timeout-minutes: 15
     # always() is required so a *skipped* sonarqube job does not silently skip
     # publishing; every gate that did run must have succeeded.
+    # PUBLISH_ENABLED gates the registry step so that a repository without
+    # Docker Hub credentials reports "not configured" instead of a red build.
+    # The warning is emitted in build-and-scan so it is impossible to miss.
     if: |
       always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       needs.lint-and-test.result == 'success' &&
       needs.build-and-scan.result == 'success' &&
-      (needs.sonarqube.result == 'success' || needs.sonarqube.result == 'skipped')
+      (needs.sonarqube.result == 'success' || needs.sonarqube.result == 'skipped') &&
+      vars.PUBLISH_ENABLED == 'true'
     permissions:
       contents: read
     outputs:

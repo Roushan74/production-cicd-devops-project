@@ -584,13 +584,15 @@ not suppression.
 | Digest | recorded in the job summary and available via `docker buildx imagetools inspect` |
 
 Required secrets: `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN` (an access token with *Read & Write*, not
-the account password).
+the account password). Required repository variable: `PUBLISH_ENABLED=true`.
 
 Deployment always references the SHA tag, never `latest`, so a rollback or a re-deploy is pinned to
 exact bytes.
 
-> Status: **configured, not yet verified** — no Docker Hub credentials were available, so no image
-> has been pushed from CI. The workflow is complete and will publish as soon as the two secrets
+> Status: **configured, not yet verified** — no Docker Hub credentials were available. The `publish`
+> job is gated on `PUBLISH_ENABLED`, so without it the pipeline reports
+> `Docker Hub publishing: SKIPPED (not configured)` with a warning annotation rather than a false
+> success or a permanently red `main`. It will publish as soon as the variable and the two secrets
 > exist.
 
 ---
